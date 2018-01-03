@@ -1,0 +1,17 @@
+[package]
+name = "cton2llvm"
+version = "0.1.0"
+authors = ["Tyler McMullen <tyler@fastly.com>"]
+
+[lib]
+crate-type=["rlib"]
+
+[[bin]]
+name="cton2llvm"
+path="src/main.rs"
+
+[dependencies]
+inkwell = { git = "https://github.com/TheDan64/inkwell" }
+cretonne = { path = "cretonne/lib/cretonne" }
+cretonne-reader = { path = "cretonne/lib/reader" }
+clap="*"
