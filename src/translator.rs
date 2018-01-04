@@ -101,10 +101,7 @@ impl Translator {
         self.builder.build_unconditional_branch(&entry_bb);
 
         for (i, param) in fnctx.pos.func.dfg.ebb_params(entry_ebb).iter().enumerate() {
-            let phi = match &fnctx.values[param] {
-                &TV::Phi(ref p) => p,
-                v => panic!("expected phi, got {:?}", v),
-            };
+            let phi = fnctx.values[param].into_phi_value();
             //println!("i={:?} param={:?} phi={:?}", i, param, phi);
             let fn_arg = fnctx.func.get_nth_param(i as u32).unwrap();
             phi.add_incoming(&[(&fn_arg, &new_entry_bb)]);
@@ -181,27 +178,15 @@ impl Translator {
     ) {
         match opcode {
             ir::Opcode::Iadd => {
-                let lhs = match fnctx.values[&args[0]] {
-                    TV::Int(x) => x,
-                    TV::Phi(x) => x.as_basic_value().into_int_value(),
-                };
-                let rhs = match fnctx.values[&args[1]] {
-                    TV::Int(x) => x,
-                    TV::Phi(x) => x.as_basic_value().into_int_value(),
-                };
+                let lhs = fnctx.values[&args[0]].into_int_value();
+                let rhs = fnctx.values[&args[1]].into_int_value();
                 let result = self.builder.build_int_add(&lhs, &rhs, "");
                 let cton_result = fnctx.pos.func.dfg.inst_results(inst)[0];
                 fnctx.insert_value(cton_result, TV::int(result));
             }
             ir::Opcode::Isub => {
-                let lhs = match fnctx.values[&args[0]] {
-                    TV::Int(x) => x,
-                    TV::Phi(x) => x.as_basic_value().into_int_value(),
-                };
-                let rhs = match fnctx.values[&args[1]] {
-                    TV::Int(x) => x,
-                    TV::Phi(x) => x.as_basic_value().into_int_value(),
-                };
+                let lhs = fnctx.values[&args[0]].into_int_value();
+                let rhs = fnctx.values[&args[1]].into_int_value();
                 let result = self.builder.build_int_sub(&lhs, &rhs, "");
                 let cton_result = fnctx.pos.func.dfg.inst_results(inst)[0];
                 fnctx.insert_value(cton_result, TV::int(result));
@@ -230,10 +215,7 @@ impl Translator {
                 // Set up the condition
                 let cmp_arg = args[0];
                 let cmp_arg_ty = self.context.i64_type();
-                let lhs = match &fnctx.values[&cmp_arg] {
-                    &TV::Int(x) => x,
-                    &TV::Phi(x) => x.as_basic_value().into_int_value(),
-                };
+                let lhs = &fnctx.values[&cmp_arg].into_int_value();
                 let rhs = cmp_arg_ty.const_int(0, false);
 
                 let cmp_val = self.builder.build_int_compare(
@@ -254,15 +236,8 @@ impl Translator {
 
                 for (inst_arg, dst_arg) in inst_dst_args.clone().zip(dst_args) {
                     //println!("inst_arg:{:?} dst_arg:{:?}", inst_arg, dst_arg);
-                    let phi = match &fnctx.values[dst_arg] {
-                        &TV::Phi(ref p) => p,
-                        v => panic!("expected phi, got {:?}", v),
-                    };
-
-                    let inst_arg = match &fnctx.values[inst_arg] {
-                        &TV::Int(x) => x,
-                        &TV::Phi(x) => x.as_basic_value().into_int_value(),
-                    };
+                    let phi = fnctx.values[dst_arg].into_phi_value();
+                    let inst_arg = fnctx.values[inst_arg].into_int_value();
 
                     phi.add_incoming(&[(&inst_arg, &curr_bb)]);
 
@@ -293,15 +268,8 @@ impl Translator {
 
                 for (inst_arg, dst_arg) in inst_dst_args.clone().zip(dst_args) {
                     //println!("inst_arg:{:?} dst_arg:{:?}", inst_arg, dst_arg);
-                    let phi = match &fnctx.values[dst_arg] {
-                        &TV::Phi(ref p) => p,
-                        v => panic!("expected phi, got {:?}", v),
-                    };
-
-                    let inst_arg = match &fnctx.values[inst_arg] {
-                        &TV::Int(x) => x,
-                        &TV::Phi(x) => x.as_basic_value().into_int_value(),
-                    };
+                    let phi = fnctx.values[dst_arg].into_phi_value();
+                    let inst_arg = fnctx.values[inst_arg].into_int_value();
 
                     phi.add_incoming(&[(&inst_arg, &curr_bb)]);
 
@@ -397,5 +365,19 @@ impl TV {
 
     fn int(v: IntValue) -> TV {
         TV::Int(v)
+    }
+
+    fn into_int_value(&self) -> IntValue {
+        match self {
+            &TV::Int(x) => x,
+            &TV::Phi(x) => x.as_basic_value().into_int_value(),
+        }
+    }
+
+    fn into_phi_value(&self) -> PhiValue {
+        match self {
+            &TV::Phi(x) => x,
+            x => panic!("Expected phi, got {:?}", x),
+        }
     }
 }
