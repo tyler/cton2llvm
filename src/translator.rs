@@ -19,15 +19,20 @@ pub fn translate(cton_mod: CtonModule) -> Result<Module, String> {
     Ok(translator.module)
 }
 
-pub struct Translator {
-    context: Context,
-    module: Module,
-    builder: Builder,
-    data: TranslatorData,
-}
-
 struct TranslatorData {
     ebb_to_entry: HashMap<ir::Ebb, BasicBlock>,
+}
+
+impl TranslatorData {
+    fn entry_bb_for_ebb(&mut self, ebb: ir::Ebb, func: FunctionValue) -> &BasicBlock {
+        match self.ebb_to_entry.entry(ebb) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let new_bb = func.append_basic_block("");
+                entry.insert(new_bb)
+            }
+        }
+    }
 }
 
 struct FunctionContext<'a> {
@@ -44,6 +49,13 @@ impl<'a> FunctionContext<'a> {
     pub fn entity_pool(&self) -> &ir::ValueListPool {
         &self.pos.func.dfg.value_lists
     }
+}
+
+pub struct Translator {
+    context: Context,
+    module: Module,
+    builder: Builder,
+    data: TranslatorData,
 }
 
 impl Translator {
@@ -80,41 +92,34 @@ impl Translator {
 
         // Set up all the Ebb entry blocks
         while let Some(ebb) = fnctx.pos.next_ebb() {
-            //println!("Setting up ebb: {:?}", ebb);
             self.translate_ebb_params(ebb, &mut fnctx);
         }
 
         // Reset the cursor
-        let entry_ebb = fnctx.pos.func.layout.entry_block().unwrap();
         fnctx.pos.set_position(CursorPosition::Nowhere);
 
         // Translate the Ebbs
         while let Some(ebb) = fnctx.pos.next_ebb() {
-            //println!("Translating ebb: {:?}", ebb);
             self.translate_ebb(ebb, &mut fnctx);
         }
 
-        // Hook up the incoming args to the entry block phis
-        let entry_bb = fnctx.func.get_entry_basic_block().unwrap();
-        let new_entry_bb = entry_bb.prepend_basic_block("entry");
+        // Add a dedicated entry block
+        let old_entry_bb = fnctx.func.get_entry_basic_block().unwrap();
+        let new_entry_bb = old_entry_bb.prepend_basic_block("entry");
         self.builder.position_at_end(&new_entry_bb);
-        self.builder.build_unconditional_branch(&entry_bb);
+        self.builder.build_unconditional_branch(&old_entry_bb);
 
+        // Hook up the incoming args to the entry block phis
+        let entry_ebb = fnctx.pos.func.layout.entry_block().unwrap();
         for (i, param) in fnctx.pos.func.dfg.ebb_params(entry_ebb).iter().enumerate() {
             let phi = fnctx.values[param].into_phi_value();
-            //println!("i={:?} param={:?} phi={:?}", i, param, phi);
             let fn_arg = fnctx.func.get_nth_param(i as u32).unwrap();
             phi.add_incoming(&[(&fn_arg, &new_entry_bb)]);
         }
     }
 
     fn translate_ebb_params(&mut self, ebb: ir::Ebb, fnctx: &mut FunctionContext) {
-        {
-            // Set the position of the Builder, then let the BasicBlock fall
-            // out of scope, so we can use the `data` struct again.
-            let bb = self.data.entry_bb_for_ebb(ebb, fnctx.func);
-            self.builder.position_at_end(&bb);
-        }
+        self.move_builder_to_ebb_entry(ebb, fnctx);
 
         let i32_ty = self.context.i64_type();
         let mut phis_params = Vec::new();
@@ -128,18 +133,10 @@ impl Translator {
     }
 
     fn translate_ebb(&mut self, ebb: ir::Ebb, fnctx: &mut FunctionContext) {
-        {
-            // Set the position of the Builder, then let the BasicBlock fall
-            // out of scope, so we can use the `data` struct again.
-            let bb = self.data.entry_bb_for_ebb(ebb, fnctx.func);
-            self.builder.position_at_end(&bb);
-        }
+        self.move_builder_to_ebb_entry(ebb, fnctx);
 
         while let Some(inst) = fnctx.pos.next_inst() {
-            //println!("inst: {:?}", fnctx.pos.func.dfg[inst]);
             self.translate_instruction(inst, fnctx);
-            //println!("values: {:?}", fnctx.values);
-            //self.module.print_to_stderr();
         }
     }
 
@@ -205,9 +202,10 @@ impl Translator {
     ) {
         match opcode {
             ir::Opcode::Brz => {
-                let dst_bb = self.data.entry_bb_for_ebb(dst, fnctx.func);
-                let new_bb = fnctx.func.append_basic_block("");
                 let curr_bb = self.builder.get_insert_block().unwrap();
+                let dst_bb = self.data.entry_bb_for_ebb(dst, fnctx.func);
+                // This branch will end the current BasicBlock, so add an else BB
+                let new_bb = fnctx.func.append_basic_block("");
 
                 // Get the args
                 let args = args.as_slice(fnctx.entity_pool());
@@ -225,22 +223,20 @@ impl Translator {
                     "",
                 );
 
+                // Add the branch itself
                 self.builder.build_conditional_branch(
                     &cmp_val,
                     &dst_bb,
                     &new_bb,
                 );
 
+                // Add the incoming values for the destination phis
                 let inst_dst_args = &args[1..].iter();
                 let dst_args = fnctx.pos.func.dfg.ebb_params(dst).iter();
-
                 for (inst_arg, dst_arg) in inst_dst_args.clone().zip(dst_args) {
-                    //println!("inst_arg:{:?} dst_arg:{:?}", inst_arg, dst_arg);
                     let phi = fnctx.values[dst_arg].into_phi_value();
                     let inst_arg = fnctx.values[inst_arg].into_int_value();
-
                     phi.add_incoming(&[(&inst_arg, &curr_bb)]);
-
                 }
 
                 self.builder.position_at_end(&new_bb);
@@ -263,14 +259,12 @@ impl Translator {
                 let curr_bb = self.builder.get_insert_block().unwrap();
                 self.builder.build_unconditional_branch(dst_bb);
 
+                // Add the incoming values for the destination phis
                 let inst_dst_args = &args.as_slice(fnctx.entity_pool()).iter();
                 let dst_args = fnctx.pos.func.dfg.ebb_params(dst).iter();
-
                 for (inst_arg, dst_arg) in inst_dst_args.clone().zip(dst_args) {
-                    //println!("inst_arg:{:?} dst_arg:{:?}", inst_arg, dst_arg);
                     let phi = fnctx.values[dst_arg].into_phi_value();
                     let inst_arg = fnctx.values[inst_arg].into_int_value();
-
                     phi.add_incoming(&[(&inst_arg, &curr_bb)]);
 
                 }
@@ -290,7 +284,7 @@ impl Translator {
             ir::Opcode::Return => {
                 self.builder.build_return(None);
             }
-            _ => println!("Unknown jump op: {:?}", opcode),
+            _ => println!("Unknown multiary op: {:?}", opcode),
         }
     }
 
@@ -337,17 +331,10 @@ impl Translator {
         let fn_type = ret_type.fn_type(&arg_types, false);
         self.module.add_function(func_name, &fn_type, None)
     }
-}
 
-impl TranslatorData {
-    fn entry_bb_for_ebb(&mut self, ebb: ir::Ebb, func: FunctionValue) -> &BasicBlock {
-        match self.ebb_to_entry.entry(ebb) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                let new_bb = func.append_basic_block("");
-                entry.insert(new_bb)
-            }
-        }
+    fn move_builder_to_ebb_entry(&mut self, ebb: ir::Ebb, fnctx: &mut FunctionContext) {
+        let bb = self.data.entry_bb_for_ebb(ebb, fnctx.func);
+        self.builder.position_at_end(&bb);
     }
 }
 
