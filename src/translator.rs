@@ -3,7 +3,7 @@ use std::collections::hash_map::{HashMap, Entry};
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::builder::Builder;
-use inkwell::values::{FunctionValue, AnyValue, AnyValueEnum, PhiValue, IntValue};
+use inkwell::values::{FunctionValue, PhiValue, IntValue};
 use inkwell::types;
 use inkwell::basic_block::BasicBlock;
 use inkwell::IntPredicate;
@@ -13,11 +13,10 @@ use cretonne::cursor::{FuncCursor, Cursor, CursorPosition};
 use parser::CtonModule;
 
 
-pub fn translate(cton_mod: CtonModule) -> Result<(), String> {
+pub fn translate(cton_mod: CtonModule) -> Result<Module, String> {
     let mut translator = Translator::new();
-    translator.translate(cton_mod);
-    translator.module.print_to_stderr();
-    Ok(())
+    translator.translate(cton_mod).expect("translated module");
+    Ok(translator.module)
 }
 
 pub struct Translator {
@@ -81,7 +80,7 @@ impl Translator {
 
         // Set up all the Ebb entry blocks
         while let Some(ebb) = fnctx.pos.next_ebb() {
-            println!("Setting up ebb: {:?}", ebb);
+            //println!("Setting up ebb: {:?}", ebb);
             self.translate_ebb_params(ebb, &mut fnctx);
         }
 
@@ -91,7 +90,7 @@ impl Translator {
 
         // Translate the Ebbs
         while let Some(ebb) = fnctx.pos.next_ebb() {
-            println!("Translating ebb: {:?}", ebb);
+            //println!("Translating ebb: {:?}", ebb);
             self.translate_ebb(ebb, &mut fnctx);
         }
 
@@ -106,7 +105,7 @@ impl Translator {
                 &TV::Phi(ref p) => p,
                 v => panic!("expected phi, got {:?}", v),
             };
-            println!("i={:?} param={:?} phi={:?}", i, param, phi);
+            //println!("i={:?} param={:?} phi={:?}", i, param, phi);
             let fn_arg = fnctx.func.get_nth_param(i as u32).unwrap();
             phi.add_incoming(&[(&fn_arg, &new_entry_bb)]);
         }
@@ -140,7 +139,7 @@ impl Translator {
         }
 
         while let Some(inst) = fnctx.pos.next_inst() {
-            println!("inst: {:?}", fnctx.pos.func.dfg[inst]);
+            //println!("inst: {:?}", fnctx.pos.func.dfg[inst]);
             self.translate_instruction(inst, fnctx);
             //println!("values: {:?}", fnctx.values);
             //self.module.print_to_stderr();
@@ -185,12 +184,10 @@ impl Translator {
                 let lhs = match fnctx.values[&args[0]] {
                     TV::Int(x) => x,
                     TV::Phi(x) => x.as_basic_value().into_int_value(),
-                    _ => panic!("Type error"),
                 };
                 let rhs = match fnctx.values[&args[1]] {
                     TV::Int(x) => x,
                     TV::Phi(x) => x.as_basic_value().into_int_value(),
-                    _ => panic!("Type error"),
                 };
                 let result = self.builder.build_int_add(&lhs, &rhs, "");
                 let cton_result = fnctx.pos.func.dfg.inst_results(inst)[0];
@@ -200,12 +197,10 @@ impl Translator {
                 let lhs = match fnctx.values[&args[0]] {
                     TV::Int(x) => x,
                     TV::Phi(x) => x.as_basic_value().into_int_value(),
-                    _ => panic!("Type error"),
                 };
                 let rhs = match fnctx.values[&args[1]] {
                     TV::Int(x) => x,
                     TV::Phi(x) => x.as_basic_value().into_int_value(),
-                    _ => panic!("Type error"),
                 };
                 let result = self.builder.build_int_sub(&lhs, &rhs, "");
                 let cton_result = fnctx.pos.func.dfg.inst_results(inst)[0];
@@ -258,7 +253,7 @@ impl Translator {
                 let dst_args = fnctx.pos.func.dfg.ebb_params(dst).iter();
 
                 for (inst_arg, dst_arg) in inst_dst_args.clone().zip(dst_args) {
-                    println!("inst_arg:{:?} dst_arg:{:?}", inst_arg, dst_arg);
+                    //println!("inst_arg:{:?} dst_arg:{:?}", inst_arg, dst_arg);
                     let phi = match &fnctx.values[dst_arg] {
                         &TV::Phi(ref p) => p,
                         v => panic!("expected phi, got {:?}", v),
@@ -297,7 +292,7 @@ impl Translator {
                 let dst_args = fnctx.pos.func.dfg.ebb_params(dst).iter();
 
                 for (inst_arg, dst_arg) in inst_dst_args.clone().zip(dst_args) {
-                    println!("inst_arg:{:?} dst_arg:{:?}", inst_arg, dst_arg);
+                    //println!("inst_arg:{:?} dst_arg:{:?}", inst_arg, dst_arg);
                     let phi = match &fnctx.values[dst_arg] {
                         &TV::Phi(ref p) => p,
                         v => panic!("expected phi, got {:?}", v),
